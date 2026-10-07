@@ -6,6 +6,10 @@
 # =============================================================================
 name: Income Model CI/CD
 
+# Ten moi lan chay = commit message (push) hoac ten workflow (chay tay),
+# de tab Actions cho thay ro lan chay nay duoc kich hoat boi commit nao.
+run-name: ${{ github.event.head_commit.message || 'Income Model CI/CD (chay tay)' }}
+
 on:
   push:
     branches: [main]
