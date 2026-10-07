@@ -9,3 +9,6 @@ uvicorn==0.29.0
 joblib==1.4.2
 google-cloud-storage==2.16.0
 pyyaml==6.0.1
+# Ghim them de MLflow 2.13 chay duoc (SQLAlchemy 2.1+ va setuptools 81+ lam MLflow 2.13 loi import)
+sqlalchemy>=2.0,<2.1
+setuptools<81

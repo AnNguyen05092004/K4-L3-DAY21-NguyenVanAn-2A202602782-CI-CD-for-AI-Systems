@@ -1,3 +1,9 @@
+# =============================================================================
+# VAI TRO CUA FILE: pipeline CI/CD (Buoc 2 + Buoc 3) cua GitHub Actions.
+# Chay tu dong khi push len main co thay doi data/*.dvc, src/*.py hoac params.yaml.
+# 4 job noi tiep nhau (needs): Unit Test -> Train -> Quality Gate -> Release.
+# Job truoc fail thi cac job sau bi bo qua => model xau khong bao gio duoc deploy.
+# =============================================================================
 name: Income Model CI/CD
 
 on:
@@ -31,8 +37,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run unit tests
-        # TODO 1: Viet lenh de chay pytest tren thu muc tests/ voi co -v
-        run: # <dien lenh o day>
+        # TODO 1: chay pytest tren thu muc tests/ voi co -v (verbose)
+        run: pytest tests/ -v
 
 
   # ---------------------------------------------------------------------------
@@ -44,6 +50,7 @@ jobs:
     name: Train
     needs: unit-test
     runs-on: ubuntu-latest
+    # Khai bao output cua job de job quality-gate doc duoc (needs.train.outputs.f1).
     outputs:
       f1: ${{ steps.read_report.outputs.f1 }}
 
@@ -58,41 +65,50 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Authenticate to Cloud Storage
-        # TODO 2: Ghi noi dung credentials ra file tam va set bien moi truong xac thuc.
-        # GCP:   echo '${{ secrets.STORAGE_CREDENTIALS }}' > /tmp/sa-key.json
-        #        echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa-key.json" >> $GITHUB_ENV
-        # AWS:   echo "AWS_ACCESS_KEY_ID=..." >> $GITHUB_ENV  (lay tu secrets)
-        #        echo "AWS_SECRET_ACCESS_KEY=..." >> $GITHUB_ENV
-        # Azure: echo "AZURE_STORAGE_CONNECTION_STRING=..." >> $GITHUB_ENV
+        # TODO 2: ghi secret STORAGE_CREDENTIALS (noi dung sa-key.json) ra file tam,
+        # roi tro bien moi truong GOOGLE_APPLICATION_CREDENTIALS toi file do.
+        # Truyen secret qua `env` (thay vi nhung thang vao lenh) de tranh loi dau nhay.
+        env:
+          SA_JSON: ${{ secrets.STORAGE_CREDENTIALS }}
         run: |
-          # <dien code o day>
+          printf '%s' "$SA_JSON" > /tmp/sa-key.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa-key.json" >> $GITHUB_ENV
 
       - name: Pull data with DVC
-        # TODO 3: Pull cac file du lieu can thiet tu cloud storage bang lenh dvc pull.
-        #         Chi pull train_batch1.csv va holdout.csv (khong can train_batch2.csv).
-        run: # <dien lenh o day>
+        # TODO 3: dvc pull chi 2 file can thiet (khong keo train_batch2.csv).
+        # .dvc/config khong chua duong dan key (chi co tren may ban), nen chi dinh
+        # credentialpath cuc bo (--local, khong commit) tro toi key tren runner.
+        run: |
+          dvc remote modify --local labstore credentialpath /tmp/sa-key.json
+          dvc pull data/train_batch1.csv data/holdout.csv
 
       - name: Train model
         run: python src/train.py
 
       - name: Read report
         id: read_report
-        # TODO 4: Doc gia tri "f1_score" tu outputs/report.json bang Python inline.
-        #         Set ket qua thanh output "f1" de job quality-gate co the doc.
-        #
-        # Goi y:
-        #   F1=$(python -c "import json; d=json.load(open('outputs/report.json')); print(d['f1_score'])")
-        #   echo "f1=$F1" >> $GITHUB_OUTPUT
+        # TODO 4: doc f1_score tu outputs/report.json, dat thanh output "f1".
+        # Output cua GitHub Actions luon la CHUOI; quality-gate se float() lai.
         run: |
-          # <dien code o day>
+          F1=$(python -c "import json; d=json.load(open('outputs/report.json')); print(d['f1_score'])")
+          echo "f1_score = $F1"
+          echo "f1=$F1" >> $GITHUB_OUTPUT
 
       - name: Upload model to Cloud Storage
-        # TODO 5: Su dung cloud SDK de upload models/model.joblib len
-        #         <bucket>/artifacts/current/model.joblib.
-        #         Ten bucket lay tu secret ARTIFACT_BUCKET.
+        # TODO 5: upload models/model.joblib len <bucket>/artifacts/current/model.joblib
+        # de VM tai ve khi service khoi dong. Ten bucket lay tu secret ARTIFACT_BUCKET.
+        env:
+          ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
         run: |
           python - <<'PYEOF'
-          # <dien code Python o day>
+          import os
+          from google.cloud import storage
+
+          bucket_name = os.environ["ARTIFACT_BUCKET"]
+          client = storage.Client()                  # tu doc GOOGLE_APPLICATION_CREDENTIALS
+          blob = client.bucket(bucket_name).blob("artifacts/current/model.joblib")
+          blob.upload_from_filename("models/model.joblib")
+          print(f"Uploaded model to gs://{bucket_name}/artifacts/current/model.joblib")
           PYEOF
 
       - name: Save report as artifact
@@ -119,18 +135,15 @@ jobs:
     steps:
 
       - name: Check quality gate
-        # TODO 6: Doc f1 tu output cua job train.
-        #         Neu f1 < 0.65, ket thuc voi loi ro rang.
-        #         Neu dat nguong, in thong bao va tiep tuc.
-        #
-        # Goi y:
-        #   f1 = float("${{ needs.train.outputs.f1 }}")
-        #   if f1 < 0.65:
-        #       raise SystemExit(f"FAILED: f1_score {f1:.4f} < 0.65. Huy trien khai.")
-        #   print("PASSED: dang trien khai model.")
+        # TODO 6: doc f1 tu output cua job train (chuoi -> float), so voi 0.65.
+        # SystemExit voi thong bao => step fail => job Release bi bo qua.
         run: |
           python - <<'PYEOF'
-          # <dien code Python o day>
+          f1 = float("${{ needs.train.outputs.f1 }}")
+          print(f"f1_score = {f1:.4f} (nguong 0.65)")
+          if f1 < 0.65:
+              raise SystemExit(f"FAILED: f1_score {f1:.4f} < 0.65. Huy trien khai.")
+          print("PASSED: dang trien khai model.")
           PYEOF
 
 
@@ -152,12 +165,20 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            # TODO 7: Restart service income-api tren VM.
-            # TODO 8: Cho server san sang roi goi curl /healthz de xac nhan.
-            #         Neu health check that bai sau nhieu lan thu, thoat voi exit 1.
-            #
-            # Goi y:
-            #   sudo systemctl restart income-api
-            #   sleep 5
-            #   curl -sf http://localhost:8080/healthz && echo "Health check passed." || exit 1
-            # <dien lenh bash o day>
+            # TODO 7: restart service -> serve.py chay lai va tai model MOI tu cloud storage.
+            sudo systemctl restart income-api
+            # TODO 8: cho server san sang (tai model + nap sklearn mat vai giay) roi
+            # goi /healthz; thu toi 10 lan, that bai het thi exit 1 de job Release do.
+            sleep 5
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              if curl -sf http://localhost:8080/healthz; then
+                echo
+                echo "Health check passed."
+                exit 0
+              fi
+              echo "Lan thu $i: server chua san sang, doi 3 giay..."
+              sleep 3
+            done
+            echo "Health check FAILED."
+            sudo journalctl -u income-api -n 30 --no-pager
+            exit 1
